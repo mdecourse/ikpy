@@ -1,7 +1,7 @@
-:mod:`ikpy.geometry_utils` module
+:mod:`ikpy.urdf.URDF` module
 ----------------------------------------
 
-.. automodule:: ikpy.geometry_utils
+.. automodule:: ikpy.urdf.URDF
     :members:
     :undoc-members:
     :show-inheritance:

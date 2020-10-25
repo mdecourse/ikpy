@@ -5,7 +5,9 @@ This module implements the Link class.
 """
 import numpy as np
 import sympy
-from . import geometry_utils
+
+# Ikpy imports
+from ikpy.utils import geometry
 
 
 class Link(object):
@@ -18,102 +20,165 @@ class Link(object):
         The name of the link
     bounds: tuple
         Optional : The bounds of the link. Defaults to None
-    use_symbolic_matrix: bool
-        wether the transformation matrix is stored as Numpy array or as a Sympy symbolic matrix.
+
+    Attributes
+    ----------
+    has_rotation: bool
+        Whether the link provides a rotation
+    length: float
+        Length of the link
     """
 
-    def __init__(self, name, bounds=(None, None)):
+    def __init__(self, name, length, bounds=(None, None), is_final=False):
         self.bounds = bounds
         self.name = name
+        self.length = length
+        self.axis_length = length
+        self.is_final = is_final
+        self.has_rotation = False
 
     def __repr__(self):
-        return("Link name={}".format(self.name))
+        return "Link name={} bounds={}".format(self.name, self.bounds)
 
-    def _get_rotation_axis(self):
+    def get_rotation_axis(self):
+        """
+
+        Returns
+        -------
+        coords:
+            coordinates of the rotation axis in the frame of the joint
+
+        """
         # Defaults to None
-        return [0, 0, 0, 1]
+        raise ValueError("This Link doesn't have a rotation axis")
 
-    def get_transformation_matrix(self, theta):
+    def get_link_frame_matrix(self, actuator_parameters):
+        """
+        Return the frame matrix corresponding to the link, parameterized with theta
+
+        Parameters
+        ----------
+        actuator_parameters: dict
+            Values for the actuator movements
+
+        Note
+        ----
+        Theta works for rotations, and for other one-dimensional actuators (ex: prismatic joints), even if the name can be misleading
+        """
         raise NotImplementedError
 
 
 class URDFLink(Link):
     """Link in URDF representation.
 
-    :param name: The name of the link
-    :type name: string
-    :param bounds: Optional : The bounds of the link. Defaults to None
-    :type bounds: tuple
-    :param translation_vector: The translation vector. (In URDF, attribute "xyz" of the "origin" element)
-    :type translation_vector: numpy.array
-    :param orientation: The orientation of the link. (In URDF, attribute "rpy" of the "origin" element)
-    :type orientation: numpy.array
-    :param rotation: The rotation axis of the link. (In URDF, attribute "xyz" of the "axis" element)
-    :type rotation: numpy.array
-    :param angle_representation: Optionnal : The representation used by the angle. Currently supported representations : rpy. Defaults to rpy, the URDF standard.
-    :type angle_representation: string
-    :param use_symbolic_matrix: wether the transformation matrix is stored as a Numpy array or as a Sympy symbolic matrix.
-    :type use_symbolic_matrix: bool
-    :returns: The link object
-    :rtype: URDFLink
-    :Example:
+    Parameters
+    ----------
+    name: str
+        The name of the link
+    bounds: tuple
+        Optional : The bounds of the link. Defaults to None
+    translation_vector: numpy.array
+        The translation vector. (In URDF, attribute "xyz" of the "origin" element)
+    orientation: numpy.array
+        The orientation of the link. (In URDF, attribute "rpy" of the "origin" element)
+    rotation: numpy.array
+        The rotation axis of the link. (In URDF, attribute "xyz" of the "axis" element)
+    angle_representation: str
+        Optional : The representation used by the angle. Currently supported representations : rpy. Defaults to rpy, the URDF standard.
+    use_symbolic_matrix: bool
+        whether the transformation matrix is stored as a Numpy array or as a Sympy symbolic matrix.
+
+    Returns
+    -------
+    URDFLink
+        The link object
+
+    Example
+    -------
 
     URDFlink()
     """
 
-    def __init__(self, name, translation_vector, orientation, rotation, bounds=(None, None), angle_representation="rpy", use_symbolic_matrix=True):
-        Link.__init__(self, name=name, bounds=bounds)
+    def __init__(self, name, translation_vector, orientation, rotation=None, bounds=(None, None), angle_representation="rpy", use_symbolic_matrix=True):
+        Link.__init__(self, name=name, bounds=bounds, length=np.linalg.norm(translation_vector))
         self.use_symbolic_matrix = use_symbolic_matrix
         self.translation_vector = np.array(translation_vector)
         self.orientation = np.array(orientation)
-        self.rotation = np.array(rotation)
-
-        self._length = np.linalg.norm(translation_vector)
-        self._axis_length = self._length
+        if rotation is not None:
+            self.rotation = np.array(rotation)
+            self.has_rotation = True
+        else:
+            self.rotation = None
+            self.has_rotation = False
 
         if use_symbolic_matrix:
             # Angle symbolique qui paramètre la rotation du joint en cours
             theta = sympy.symbols("theta")
-
-            symbolic_frame_matrix = np.eye(4)
-
-            # Apply translation matrix
-            symbolic_frame_matrix = symbolic_frame_matrix * sympy.Matrix(geometry_utils.homogeneous_translation_matrix(*translation_vector))
-
-            # Apply orientation matrix
-            symbolic_frame_matrix = symbolic_frame_matrix * geometry_utils.cartesian_to_homogeneous(geometry_utils.rpy_matrix(*orientation))
-
-            # Apply rotation matrix
-            symbolic_frame_matrix = symbolic_frame_matrix * geometry_utils.cartesian_to_homogeneous(geometry_utils.symbolic_axis_rotation_matrix(rotation, theta), matrix_type="sympy")
-
-            self.symbolic_transformation_matrix = sympy.lambdify(theta, symbolic_frame_matrix, "numpy")
+            self.symbolic_transformation_matrix = self._apply_geometric_transformations(theta=theta, symbolic=self.use_symbolic_matrix)
 
     def __str__(self):
         return("""URDF Link {} :
+    Bounds : {}
     Translation : {}
     Orientation : {}
-    Rotation : {}""".format(self.name, self.translation_vector, self.orientation, self.rotation))
+    Rotation : {}""".format(self.name, self.bounds, self.translation_vector, self.orientation, self.rotation))
 
-    def _get_rotation_axis(self):
-        return (np.dot(geometry_utils.homogeneous_translation_matrix(*self.translation_vector), np.dot(geometry_utils.cartesian_to_homogeneous(geometry_utils.rpy_matrix(*self.orientation)), geometry_utils.cartesian_to_homogeneous_vectors(self.rotation * self._axis_length))))
+    def get_rotation_axis(self):
+        if self.rotation is not None:
+            return np.dot(
+                geometry.homogeneous_translation_matrix(*self.translation_vector),
+                np.dot(
+                    geometry.cartesian_to_homogeneous(geometry.rpy_matrix(*self.orientation)),
+                    geometry.cartesian_to_homogeneous_vectors(self.rotation * self.axis_length)
+                )
+            )
+        else:
+            raise ValueError("This link doesn't provide a rotation")
 
-    def get_transformation_matrix(self, theta):
+    def get_link_frame_matrix(self, parameters):
+        theta = parameters["theta"]
         if self.use_symbolic_matrix:
             frame_matrix = self.symbolic_transformation_matrix(theta)
+        else:
+            frame_matrix = self._apply_geometric_transformations(theta, symbolic=False)
+
+        return frame_matrix
+
+    def _apply_geometric_transformations(self, theta, symbolic):
+
+        if symbolic:
+            # Angle symbolique qui paramètre la rotation du joint en cours
+            symbolic_frame_matrix = np.eye(4)
+
+            # Apply translation matrix
+            symbolic_frame_matrix = symbolic_frame_matrix * sympy.Matrix(geometry.homogeneous_translation_matrix(*self.translation_vector))
+
+            # Apply orientation matrix
+            symbolic_frame_matrix = symbolic_frame_matrix * geometry.cartesian_to_homogeneous(geometry.rpy_matrix(*self.orientation))
+
+            # Apply rotation matrix
+            if self.rotation is not None:
+                symbolic_frame_matrix = symbolic_frame_matrix * geometry.cartesian_to_homogeneous(geometry.symbolic_axis_rotation_matrix(self.rotation, theta), matrix_type="sympy")
+
+            symbolic_frame_matrix = sympy.lambdify(theta, symbolic_frame_matrix, "numpy")
+
+            return symbolic_frame_matrix
+
         else:
             # Init the transformation matrix
             frame_matrix = np.eye(4)
 
             # First, apply translation matrix
-            frame_matrix = np.dot(frame_matrix, geometry_utils.homogeneous_translation_matrix(*self.translation_vector))
+            frame_matrix = np.dot(frame_matrix, geometry.homogeneous_translation_matrix(*self.translation_vector))
 
             # Apply orientation
-            frame_matrix = np.dot(frame_matrix, geometry_utils.cartesian_to_homogeneous(geometry_utils.rpy_matrix(*self.orientation)))
+            frame_matrix = np.dot(frame_matrix, geometry.cartesian_to_homogeneous(geometry.rpy_matrix(*self.orientation)))
 
             # Apply rotation matrix
-            frame_matrix = np.dot(frame_matrix, geometry_utils.cartesian_to_homogeneous(geometry_utils.axis_rotation_matrix(self.rotation, theta)))
+            if self.rotation is not None:
+                frame_matrix = np.dot(frame_matrix, geometry.cartesian_to_homogeneous(geometry.axis_rotation_matrix(self.rotation, theta)))
 
-        return frame_matrix
+            return frame_matrix
 
 
 class DHLink(Link):
@@ -141,7 +206,7 @@ class DHLink(Link):
     def __init__(self, name, d=0, a=0, bounds=None, use_symbolic_matrix=True):
         Link.__init__(self, use_symbolic_matrix)
 
-    def get_transformation_matrix(self, theta, a):
+    def get_link_frame_matrix(self, theta, a):
         """ Computes the homogeneous transformation matrix for this link. """
         ct = np.cos(theta + self.theta)
         st = np.sin(theta + self.theta)
@@ -157,11 +222,10 @@ class DHLink(Link):
 class OriginLink(Link):
     """The link at the origin of the robot"""
     def __init__(self):
-        Link.__init__(self, name="Base link")
-        self._length = 1
+        Link.__init__(self, name="Base link", length=1)
 
-    def _get_rotation_axis(self):
+    def get_rotation_axis(self):
         return [0, 0, 0, 1]
 
-    def get_transformation_matrix(self, theta):
+    def get_link_frame_matrix(self, theta):
         return np.eye(4)
